@@ -1,0 +1,142 @@
+<script>
+  if (typeof window !== 'undefined' && !window.__gfx) {
+    window.__gfx = true;
+    (function () {
+      var $ = function (s, r) { return (r || document).querySelector(s); };
+      var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+      var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      // Damping 1.0 spring that starts from the live value and inherits velocity
+      function spring(from, to, v, cb, response) {
+        var w = 6.2832 / (response || 0.35), x = from - to, vel = v || 0, last = performance.now(), id;
+        (function step(t) {
+          var dt = Math.min((t - last) / 1000, 0.032); last = t;
+          vel += (-2 * w * vel - w * w * x) * dt; x += vel * dt; cb(to + x);
+          if (Math.abs(x) > 0.05 || Math.abs(vel) > 0.05) id = requestAnimationFrame(step); else cb(to);
+        })(last);
+        return function () { cancelAnimationFrame(id); };
+      }
+
+      // 1. Reading progress
+      var bar = document.createElement('div'); bar.className = 'gfx-progress'; document.body.appendChild(bar);
+      var ticking = false;
+      addEventListener('scroll', function () {
+        if (ticking) return; ticking = true;
+        requestAnimationFrame(function () {
+          var max = document.documentElement.scrollHeight - innerHeight;
+          bar.style.transform = 'scaleX(' + (max > 0 ? scrollY / max : 0) + ')'; ticking = false;
+        });
+      }, { passive: true });
+
+      // 2. Pointer-tracked specular glare
+      document.addEventListener('pointermove', function (e) {
+        var c = e.target.closest && e.target.closest('.feature-card, .code-card');
+        if (!c) return;
+        var r = c.getBoundingClientRect();
+        c.style.setProperty('--mx', (e.clientX - r.left) + 'px'); c.style.setProperty('--my', (e.clientY - r.top) + 'px');
+      }, { passive: true });
+
+      // 3. Copy buttons (completion feedback)
+      $$('.docs-content pre').forEach(function (pre) {
+        var b = document.createElement('button'); b.className = 'copy-btn'; b.textContent = 'Copy'; b.type = 'button';
+        b.onclick = function () {
+          navigator.clipboard.writeText(pre.innerText.replace(/Copy$|Copied$/, '').trim()).then(function () {
+            b.textContent = 'Copied'; b.classList.add('done');
+            setTimeout(function () { b.textContent = 'Copy'; b.classList.remove('done'); }, 1400);
+          });
+        };
+        pre.appendChild(b);
+      });
+
+      // 4. On-this-page TOC with scroll-spy
+      var heads = $$('.docs-content h2, .docs-content h3');
+      if (heads.length > 1) {
+        var toc = document.createElement('nav'); toc.className = 'gfx-toc'; toc.setAttribute('aria-label', 'On this page');
+        toc.innerHTML = '<h5>On this page</h5>';
+        var links = {};
+        heads.forEach(function (h, i) {
+          if (!h.id) h.id = (h.textContent || 'section').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '-' + i;
+          var a = document.createElement('a'); a.href = '#' + h.id; a.textContent = h.textContent;
+          if (h.tagName === 'H3') a.className = 'sub';
+          toc.appendChild(a); links[h.id] = a;
+        });
+        document.body.appendChild(toc);
+        var io = new IntersectionObserver(function (es) {
+          es.forEach(function (en) {
+            if (!en.isIntersecting) return;
+            $$('a.on', toc).forEach(function (n) { n.classList.remove('on'); });
+            links[en.target.id].classList.add('on');
+          });
+        }, { rootMargin: '-15% 0px -75% 0px' });
+        heads.forEach(function (h) { io.observe(h); });
+      }
+
+      // 5. Command palette (⌘K / Ctrl+K / "/")
+      var map = { Guide: ['/guide/', 'introduction quick-start sfc-syntax reactivity derived-and-effects control-flow components-and-props context-api'],
+        'Best Practices': ['/best-practices/', 'text-node-hydration component-styling'],
+        Architecture: ['/architecture/', 'virtual-machine isa-reference compiler-pipeline reconciliation'],
+        'SSG': ['/ssg/', 'overview islands routing-and-layouts content-collections configuration'],
+        Ecosystem: ['/ecosystem/', 'unplugin router cli eslint-plugin prettier-plugin vscode-plugin devtools'],
+        API: ['/api/', 'compiler dom ssr shared'] };
+      var caps = { sfc: 'SFC', isa: 'ISA', cli: 'CLI', ssr: 'SSR', dom: 'DOM', eslint: 'ESLint', vscode: 'VSCode', ssg: 'SSG', api: 'API', and: 'and', of: 'of' };
+      var items = [];
+      Object.keys(map).forEach(function (sec) {
+        map[sec][1].split(' ').forEach(function (slug) {
+          var t = slug.split('-').map(function (w) { return caps[w] || w[0].toUpperCase() + w.slice(1); }).join(' ');
+          items.push({ t: t, s: sec, u: map[sec][0] + slug + '/' });
+        });
+      });
+
+      var scrim = document.createElement('div'); scrim.className = 'palette-scrim';
+      scrim.innerHTML = '<div class="palette" role="dialog" aria-modal="true" aria-label="Search documentation"><input placeholder="Search the docs…" aria-label="Search" autocomplete="off"/><ul></ul><div class="palette-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> navigate</span><span><kbd>↵</kbd> open</span><span><kbd>esc</kbd> close</span></div></div>';
+      document.body.appendChild(scrim);
+      var panel = $('.palette', scrim), input = $('input', scrim), list = $('ul', scrim), sel = 0, shown = [], opener = null;
+
+      function render() {
+        var q = input.value.trim().toLowerCase();
+        shown = items.filter(function (i) { return !q || (i.t + ' ' + i.s).toLowerCase().indexOf(q) > -1; }).slice(0, 12);
+        sel = Math.min(sel, Math.max(shown.length - 1, 0));
+        list.innerHTML = shown.length ? '' : '<div class="empty">No results</div>';
+        shown.forEach(function (i, n) {
+          var li = document.createElement('li'); if (n === sel) li.className = 'sel';
+          li.innerHTML = '<span>' + i.t + '</span><small>' + i.s + '</small>';
+          li.onpointerdown = function () { location.href = i.u; };
+          list.appendChild(li);
+        });
+      }
+      function open(from) {
+        opener = from || document.activeElement;
+        if (from) { var r = from.getBoundingClientRect(), pr = panel.getBoundingClientRect(); // anchor to trigger
+          panel.style.transformOrigin = (r.left + r.width / 2 - (innerWidth - Math.min(576, innerWidth - 32)) / 2) + 'px ' + (r.top - innerHeight * 0.14) + 'px'; }
+        scrim.classList.add('open'); input.value = ''; sel = 0; render();
+        setTimeout(function () { input.focus(); }, 30);
+      }
+      function close() { scrim.classList.remove('open'); if (opener && opener.focus) opener.focus(); }
+      scrim.addEventListener('pointerdown', function (e) { if (e.target === scrim) close(); });
+      input.addEventListener('input', function () { sel = 0; render(); });
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'ArrowDown') { sel = (sel + 1) % shown.length; render(); e.preventDefault(); }
+        else if (e.key === 'ArrowUp') { sel = (sel - 1 + shown.length) % shown.length; render(); e.preventDefault(); }
+        else if (e.key === 'Enter' && shown[sel]) location.href = shown[sel].u;
+      });
+      document.addEventListener('keydown', function (e) {
+        var typing = /input|textarea/i.test((e.target.tagName || '')) || e.target.isContentEditable;
+        if ((e.key === 'k' && (e.metaKey || e.ctrlKey)) || (e.key === '/' && !typing)) { e.preventDefault(); scrim.classList.contains('open') ? close() : open(); }
+        else if (e.key === 'Escape' && scrim.classList.contains('open')) close();
+      });
+      document.addEventListener('click', function (e) {
+        var t = e.target.closest && e.target.closest('[data-open-palette]'); if (t) open(t);
+      });
+
+      // 6. Real refraction on small glass surfaces (Chromium); frosted fallback elsewhere
+      function glassify() {
+        if (typeof window.liquidGlass !== 'function' || matchMedia('(prefers-reduced-transparency: reduce)').matches) return;
+        $$('.header-nav, .search-trigger, .github-btn, .install-command-box, .gfx-toc, .palette')
+          .forEach(function (el) { if (el.offsetWidth && el.offsetWidth < 800) window.liquidGlass(el, { scale: -70, chroma: 4, blur: 6, fallbackBlur: 18 }); });
+      }
+      var s = document.createElement('script'); s.src = '/liquid-glass.js'; s.onload = glassify; document.head.appendChild(s);
+    })();
+  }
+</script>
+
+<div class="gfx-root" hidden></div>
